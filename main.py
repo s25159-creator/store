@@ -1,125 +1,237 @@
-import streamlit as st
+import math
+import os
+import numpy as np
 import pandas as pd
 import plotly.express as px
-import numpy as np
+import streamlit as st
 
-st.set_page_config(page_title="편의점 & 카페 지도 시각화", layout="wide")
-st.title("\U0001f4cd 편의점 & 카페 분포 지도 (반경 검색 포함)")
+# ==========================================
+# 1. 페이지 기본 설정 및 제목
+# ==========================================
+st.set_page_config(
+    page_title="편의점 & 카페 지도 탐색기", page_icon="📍", layout="wide"
+)
 
-# 실제 CSV(store.csv) 열 이름 및 값 매핑 — 다운로드한 파일에 맞게 조정하세요
-STORE_NAME_COL = "상호명"
-LAT_COL = "위도"
-LON_COL = "경도"
-CATEGORY_COL = "상권업종소분류명"
-SIDO_COL = "시도명"
+st.title("📍 편의점 및 카페 위치 탐색기")
+st.caption("지역별 매장 위치 및 업종별 필터, 반경 내 검색 기능을 제공합니다.")
 
-NAME_CONVENIENCE = "편의점"
-NAME_CAFE = "카페"
 
+# ==========================================
+# 2. 데이터 불러오기 및 전처리 함수
+# ==========================================
 @st.cache_data
 def load_data():
-    try:
-        df = pd.read_csv("store.csv")
-    except FileNotFoundError:
-        df = pd.read_csv("store_filtered.csv")
+    file_path = "store.csv"
+    if not os.path.exists(file_path):
+        if os.path.exists("store_filtered.csv"):
+            file_path = "store_filtered.csv"
+        else:
+            st.error(
+                "데이터 파일(store.csv 또는 store_filtered.csv)을 찾을 수 없습니다."
+            )
+            return None
 
-    filtered_df = df[df[CATEGORY_COL].isin([NAME_CONVENIENCE, NAME_CAFE])].copy()
+    df = pd.read_csv(file_path)
 
-    filtered_df[LAT_COL] = pd.to_numeric(filtered_df[LAT_COL], errors="coerce")
-    filtered_df[LON_COL] = pd.to_numeric(filtered_df[LON_COL], errors="coerce")
-    filtered_df = filtered_df.dropna(subset=[LAT_COL, LON_COL])
-    return filtered_df
+    # 위도, 경도 숫자형 변환 및 결측치 제거
+    df["위도"] = pd.to_numeric(df["위도"], errors="coerce")
+    df["경도"] = pd.to_numeric(df["경도"], errors="coerce")
+    df = df.dropna(subset=["위도", "경도"])
 
-try:
-    df = load_data()
-except Exception as e:
-    st.error(f"\u26a0\ufe0f 데이터 파일을 불러오는 중 오류가 발생했습니다: {e}")
-    st.stop()
+    # 편의점과 카페만 필터링
+    target_categories = ["편의점", "카페"]
+    df = df[df["상권업종소분류명"].isin(target_categories)].copy()
 
-st.sidebar.header("\U0001f50d 검색 설정")
-sido_list = sorted(df[SIDO_COL].dropna().unique())
-selected_sido = st.sidebar.selectbox("1\ufe0f\u20e3 지역(시/도) 선택", sido_list)
+    return df
 
-view_df = df[df[SIDO_COL] == selected_sido].copy()
 
-st.sidebar.markdown("---")
-use_radius = st.sidebar.checkbox("2\ufe0f\u20e3 반경 검색 사용하기 (특정 매장 기준)")
+df_raw = load_data()
 
-if use_radius and not view_df.empty:
-    store_names = sorted(view_df[STORE_NAME_COL].dropna().unique())
-    center_store = st.sidebar.selectbox("기준 매장 선택", store_names)
-    radius_km = st.sidebar.slider("검색 반경 (km)", min_value=0.5, max_value=10.0, value=3.0, step=0.5)
+if df_raw is not None and not df_raw.empty:
 
-    center_row = view_df[view_df[STORE_NAME_COL] == center_store].iloc[0]
-    center_lat = center_row[LAT_COL]
-    center_lon = center_row[LON_COL]
+    # ==========================================
+    # 3. 하버사인(Haversine) 거리 계산 함수
+    # ==========================================
+    def haversine_distance(lat1, lon1, lat2, lon2):
+        """두 지점의 위도, 경도를 바탕으로 대권 거리(km)를 계산합니다."""
+        R = 6371.0  # 지구 반지름 (km)
 
-    def calc_distance(lat1, lon1, lat2, lon2):
-        # 하버사인 공식: 지구가 둥글다는 것을 감안해 두 좌표 사이의 실제 거리(km)를 계산
-        lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
-        dlat = lat2 - lat1
-        dlon = lon2 - lon1
-        a = np.sin(dlat / 2.0) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2.0) ** 2
-        c = 2 * np.arcsin(np.sqrt(a))
-        return 6371 * c
+        lat1_rad = math.radians(lat1)
+        lon1_rad = math.radians(lon1)
+        lat2_rad = math.radians(lat2)
+        lon2_rad = math.radians(lon2)
 
-    view_df["거리(km)"] = calc_distance(center_lat, center_lon, view_df[LAT_COL], view_df[LON_COL])
-    view_df = view_df[view_df["거리(km)"] <= radius_km]
+        dlat = lat2_rad - lat1_rad
+        dlon = lon2_rad - lon1_rad
 
-subhead_text = f"\U0001f4ca {selected_sido} 업종별 현황"
-if use_radius:
-    subhead_text += f" (기준 매장 반경 {radius_km}km 이내)"
-st.subheader(subhead_text)
-
-conv_count = (view_df[CATEGORY_COL] == NAME_CONVENIENCE).sum()
-cafe_count = (view_df[CATEGORY_COL] == NAME_CAFE).sum()
-
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.metric(label="\U0001f3ea 편의점 수", value=f"{conv_count:,}개")
-with col2:
-    st.metric(label="\u2615 카페 수", value=f"{cafe_count:,}개")
-with col3:
-    st.metric(label="\U0001f4cc 전체 매장 수", value=f"{(conv_count + cafe_count):,}개")
-
-st.divider()
-
-if not view_df.empty:
-    if use_radius:
-        center_dict = {"lat": center_lat, "lon": center_lon}
-        zoom_level = 13
-    else:
-        center_dict = {"lat": view_df[LAT_COL].mean(), "lon": view_df[LON_COL].mean()}
-        zoom_level = 11
-
-    color_map = {NAME_CONVENIENCE: "#1f77b4", NAME_CAFE: "#ff7f0e"}
-
-    hover_info = {LAT_COL: False, LON_COL: False, CATEGORY_COL: True}
-    if use_radius:
-        hover_info["거리(km)"] = ":.2f"
-
-    # 최신 Plotly(scatter_map) / 구버전(scatter_mapbox) 모두 호환되게 분기 처리
-    if hasattr(px, "scatter_map"):
-        fig = px.scatter_map(
-            view_df, lat=LAT_COL, lon=LON_COL, color=CATEGORY_COL,
-            color_discrete_map=color_map, hover_name=STORE_NAME_COL,
-            hover_data=hover_info, zoom=zoom_level, center=center_dict,
-            map_style="open-street-map", height=650,
+        a = (
+            math.sin(dlat / 2) ** 2
+            + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2) ** 2
         )
-    else:
-        fig = px.scatter_mapbox(
-            view_df, lat=LAT_COL, lon=LON_COL, color=CATEGORY_COL,
-            color_discrete_map=color_map, hover_name=STORE_NAME_COL,
-            hover_data=hover_info, zoom=zoom_level, center=center_dict,
-            mapbox_style="open-street-map", height=650,
-        )
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-    fig.update_layout(
-        margin={"r": 0, "t": 10, "l": 0, "b": 0},
-        legend_title_text="업종 구분",
-        legend=dict(yanchor="top", y=0.98, xanchor="left", x=0.01),
+        return R * c
+
+    # ==========================================
+    # 4. 사이드바 설정 (지역, 업종 & 반경 검색)
+    # ==========================================
+    st.sidebar.header("🔍 검색 필터 설정")
+
+    # 1) 지역(시/도) 선택
+    sido_list = sorted(df_raw["시도명"].dropna().unique())
+    selected_sido = st.sidebar.selectbox("지역(시/도) 선택", sido_list)
+
+    # 선택된 지역 데이터 일차 필터링
+    df_filtered = df_raw[df_raw["시도명"] == selected_sido].copy()
+
+    # 2) 업종별 구분/필터링 선택
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🏷️ 업종 선택")
+    selected_categories = st.sidebar.multiselect(
+        "표시할 업종을 선택하세요",
+        options=["편의점", "카페"],
+        default=["편의점", "카페"]  # 기본값: 둘 다 선택
     )
 
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.warning("선택한 조건에 맞는 매장 데이터가 없습니다.")
+    # 선택된 업종으로 2차 필터링
+    df_filtered = df_filtered[df_filtered["상권업종소분류명"].isin(selected_categories)].copy()
+
+    # 3) 반경 검색 옵션
+    st.sidebar.markdown("---")
+    use_radius_search = st.sidebar.checkbox("🎯 반경 검색 사용하기")
+
+    center_lat = None
+    center_lon = None
+    radius_km = None
+    selected_store_name = ""
+
+    if use_radius_search:
+        st.sidebar.subheader("반경 검색 조건")
+
+        # 기준 매장 선택 드롭다운 (지역 내 모든 매장 기준)
+        raw_sido_stores = df_raw[df_raw["시도명"] == selected_sido]
+        store_options = raw_sido_stores["상호명"].dropna().unique()
+        
+        if len(store_options) > 0:
+            selected_store_name = st.sidebar.selectbox(
+                "기준 매장 선택", store_options
+            )
+
+            # 선택한 매장의 위도/경도 가져오기
+            selected_store = raw_sido_stores[
+                raw_sido_stores["상호명"] == selected_store_name
+            ].iloc[0]
+            center_lat = selected_store["위도"]
+            center_lon = selected_store["경도"]
+
+            # 반경 설정 슬라이더 (0.5km ~ 10.0km)
+            radius_km = st.sidebar.slider(
+                "검색 반경 (km)",
+                min_value=0.5,
+                max_value=10.0,
+                value=2.0,
+                step=0.5,
+            )
+
+            # 기준 위치로부터의 거리 계산 및 반경 내 필터링
+            df_filtered["거리_km"] = df_filtered.apply(
+                lambda row: haversine_distance(
+                    center_lat, center_lon, row["위도"], row["경도"]
+                ),
+                axis=1,
+            )
+            df_filtered = df_filtered[
+                df_filtered["거리_km"] <= radius_km
+            ].copy()
+        else:
+            st.sidebar.warning("선택한 지역에 매장이 없습니다.")
+
+    # ==========================================
+    # 5. 메인 화면 - 지표 카드(Metric) 출력
+    # ==========================================
+    if use_radius_search and selected_store_name:
+        st.subheader(
+            f"📍 기준 매장('{selected_store_name}') 반경 {radius_km} km 이내"
+        )
+
+    # 매장 수 집계
+    convenience_count = len(df_filtered[df_filtered["상권업종소분류명"] == "편의점"])
+    cafe_count = len(df_filtered[df_filtered["상권업종소분류명"] == "카페"])
+    total_count = len(df_filtered)
+
+    # 3개 컬럼에 지표 표시
+    col1, col2, col3 = st.columns(3)
+    col1.metric("🏪 편의점 수", f"{convenience_count:,} 개")
+    col2.metric("☕ 카페 수", f"{cafe_count:,} 개")
+    col3.metric("🏢 전체 매장 수", f"{total_count:,} 개")
+
+    st.markdown("---")
+
+    # ==========================================
+    # 6. 메인 화면 - Plotly 지도 그리기
+    # ==========================================
+    if df_filtered.empty:
+        st.info("⚠️ 조건에 맞는 매장이 하나도 없습니다. 업종 필터나 지역 설정을 확인해 주세요.")
+    else:
+        # 업종별 색상 구분 설정 (편의점: 파란색, 카페: 주황색)
+        color_map = {"편의점": "#1f77b4", "카페": "#ff7f0e"}
+
+        # Plotly 최신/구버전 호환성 분기 처리
+        is_latest_plotly = hasattr(px, "scatter_map")
+
+        if is_latest_plotly:
+            fig = px.scatter_map(
+                df_filtered,
+                lat="위도",
+                lon="경도",
+                color="상권업종소분류명",  # 업종별로 색상 구분
+                hover_name="상호명",
+                hover_data={"상권업종소분류명": True, "위도": False, "경도": False},
+                color_discrete_map=color_map,
+                zoom=12 if use_radius_search else 10,
+                center=(
+                    {"lat": center_lat, "lon": center_lon}
+                    if (use_radius_search and center_lat)
+                    else None
+                ),
+            )
+            fig.update_layout(
+                map_style="open-street-map",
+                margin={"r": 0, "t": 0, "l": 0, "b": 0}
+            )
+        else:
+            fig = px.scatter_mapbox(
+                df_filtered,
+                lat="위도",
+                lon="경도",
+                color="상권업종소분류명",  # 업종별로 색상 구분
+                hover_name="상호명",
+                hover_data={"상권업종소분류명": True, "위도": False, "경도": False},
+                color_discrete_map=color_map,
+                zoom=12 if use_radius_search else 10,
+                center=(
+                    {"lat": center_lat, "lon": center_lon}
+                    if (use_radius_search and center_lat)
+                    else None
+                ),
+            )
+            fig.update_layout(
+                mapbox_style="open-street-map",
+                margin={"r": 0, "t": 0, "l": 0, "b": 0}
+            )
+
+        # 점 크기 지정 및 범례 위치/타이틀 설정
+        fig.update_traces(marker=dict(size=10))
+        fig.update_layout(
+            legend_title_text="업종 구분",
+            legend=dict(
+                yanchor="top",
+                y=0.99,
+                xanchor="left",
+                x=0.01,
+                bgcolor="rgba(255, 255, 255, 0.8)"  # 지도 위 범례 배경을 살짝 투명하게 처리
+            )
+        )
+
+        # Streamlit 화면에 지도 출력
+        st.plotly_chart(fig, use_container_width=True)
