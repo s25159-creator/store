@@ -13,7 +13,7 @@ st.set_page_config(
 )
 
 st.title("📍 편의점 및 카페 위치 탐색기")
-st.caption("지역별 매장 위치 및 업종별 필터, 반경 내 검색 기능을 제공합니다.")
+st.caption("지역별/매장명 검색, 업종별 필터 및 반경 내 검색 기능을 제공합니다.")
 
 
 # ==========================================
@@ -73,7 +73,7 @@ if df_raw is not None and not df_raw.empty:
         return R * c
 
     # ==========================================
-    # 4. 사이드바 설정 (지역, 업종, 지도 스타일 & 반경 검색)
+    # 4. 사이드바 설정 (지역, 매장 검색, 업종, 지도 스타일 & 반경 검색)
     # ==========================================
     st.sidebar.header("🔍 검색 필터 설정")
 
@@ -84,7 +84,21 @@ if df_raw is not None and not df_raw.empty:
     # 선택된 지역 데이터 일차 필터링
     df_filtered = df_raw[df_raw["시도명"] == selected_sido].copy()
 
-    # 2) 업종별 구분/필터링 선택
+    # 2) 매장명 키워드 검색 기능 (추가됨)
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🔎 매장명 검색")
+    search_keyword = st.sidebar.text_input(
+        "찾고 싶은 매장명을 입력하세요",
+        placeholder="예: 강남점, 스타벅스, CU",
+    )
+
+    # 키워드 검색어가 있으면 상호명에서 검색하여 필터링
+    if search_keyword.strip():
+        df_filtered = df_filtered[
+            df_filtered["상호명"].str.contains(search_keyword.strip(), case=False, na=False)
+        ].copy()
+
+    # 3) 업종별 구분/필터링 선택
     st.sidebar.markdown("---")
     st.sidebar.subheader("🏷️ 업종 선택")
     selected_categories = st.sidebar.multiselect(
@@ -93,21 +107,20 @@ if df_raw is not None and not df_raw.empty:
         default=["편의점", "카페"],  # 기본값: 둘 다 선택
     )
 
-    # 선택된 업종으로 2차 필터링
+    # 선택된 업종으로 필터링
     df_filtered = df_filtered[
         df_filtered["상권업종소분류명"].isin(selected_categories)
     ].copy()
 
-    # 3) 지도 테마 / 스타일 선택 (강추: CartoDB Positron)
+    # 4) 지도 테마 / 스타일 선택
     st.sidebar.markdown("---")
     st.sidebar.subheader("🎨 지도 테마 선택")
     style_option = st.sidebar.selectbox(
         "지도 디자인 테마",
         ["밝고 깔끔함 (CartoDB)", "다크 모드 (Dark Matter)", "기본 지도 (OpenStreetMap)"],
-        index=0,  # 기본값: CartoDB Positron (강추 스타일)
+        index=0,
     )
 
-    # 선택한 메뉴에 맞게 지도 스타일 매핑
     style_map = {
         "밝고 깔끔함 (CartoDB)": "carto-positron",
         "다크 모드 (Dark Matter)": "carto-darkmatter",
@@ -115,7 +128,7 @@ if df_raw is not None and not df_raw.empty:
     }
     chosen_style = style_map[style_option]
 
-    # 4) 반경 검색 옵션
+    # 5) 반경 검색 옵션
     st.sidebar.markdown("---")
     use_radius_search = st.sidebar.checkbox("🎯 반경 검색 사용하기")
 
@@ -127,7 +140,7 @@ if df_raw is not None and not df_raw.empty:
     if use_radius_search:
         st.sidebar.subheader("반경 검색 조건")
 
-        # 기준 매장 선택 드롭다운 (지역 내 모든 매장 기준)
+        # 기준 매장 선택 드롭다운 (선택한 지역의 전체 매장 대상)
         raw_sido_stores = df_raw[df_raw["시도명"] == selected_sido]
         store_options = raw_sido_stores["상호명"].dropna().unique()
 
@@ -172,6 +185,8 @@ if df_raw is not None and not df_raw.empty:
         st.subheader(
             f"📍 기준 매장('{selected_store_name}') 반경 {radius_km} km 이내"
         )
+    elif search_keyword.strip():
+        st.subheader(f"🔎 '{search_keyword.strip()}' 키워드 검색 결과")
 
     # 매장 수 집계
     convenience_count = len(df_filtered[df_filtered["상권업종소분류명"] == "편의점"])
@@ -190,12 +205,24 @@ if df_raw is not None and not df_raw.empty:
     # 6. 메인 화면 - Plotly 지도 그리기
     # ==========================================
     if df_filtered.empty:
-        st.info("⚠️ 조건에 맞는 매장이 하나도 없습니다. 업종 필터나 지역 설정을 확인해 주세요.")
+        st.info("⚠️ 조건에 맞는 매장이 하나도 없습니다. 검색어 또는 필터 설정을 확인해 주세요.")
     else:
-        # 비주얼이 향상된 컬러 매핑 (편의점: 파란색계열, 카페: 시그니처 주황색계열)
         color_map = {"편의점": "#2B5C8F", "카페": "#E05A47"}
 
-        # Plotly 최신/구버전 호환성 분기 처리
+        # 검색 결과가 1개인 경우 지도의 중심을 해당 매장으로 자동 설정
+        if len(df_filtered) == 1 and not center_lat:
+            map_center_lat = df_filtered.iloc[0]["위도"]
+            map_center_lon = df_filtered.iloc[0]["경도"]
+            zoom_val = 14
+        elif use_radius_search and center_lat:
+            map_center_lat = center_lat
+            map_center_lon = center_lon
+            zoom_val = 12.5
+        else:
+            map_center_lat = None
+            map_center_lon = None
+            zoom_val = 10.5
+
         is_latest_plotly = hasattr(px, "scatter_map")
 
         if is_latest_plotly:
@@ -207,10 +234,10 @@ if df_raw is not None and not df_raw.empty:
                 hover_name="상호명",
                 hover_data={"상권업종소분류명": True, "위도": False, "경도": False},
                 color_discrete_map=color_map,
-                zoom=12.5 if use_radius_search else 10.5,
+                zoom=zoom_val,
                 center=(
-                    {"lat": center_lat, "lon": center_lon}
-                    if (use_radius_search and center_lat)
+                    {"lat": map_center_lat, "lon": map_center_lon}
+                    if map_center_lat
                     else None
                 ),
             )
@@ -227,10 +254,10 @@ if df_raw is not None and not df_raw.empty:
                 hover_name="상호명",
                 hover_data={"상권업종소분류명": True, "위도": False, "경도": False},
                 color_discrete_map=color_map,
-                zoom=12.5 if use_radius_search else 10.5,
+                zoom=zoom_val,
                 center=(
-                    {"lat": center_lat, "lon": center_lon}
-                    if (use_radius_search and center_lat)
+                    {"lat": map_center_lat, "lon": map_center_lon}
+                    if map_center_lat
                     else None
                 ),
             )
@@ -239,7 +266,7 @@ if df_raw is not None and not df_raw.empty:
                 margin={"r": 0, "t": 0, "l": 0, "b": 0},
             )
 
-        # 마커(점) 스타일링: 크기 조절 및 테두리/투명도 효과 부여
+        # 마커(점) 스타일링
         fig.update_traces(
             marker=dict(
                 size=11,
@@ -247,7 +274,7 @@ if df_raw is not None and not df_raw.empty:
             )
         )
 
-        # 범례(Legend) 스타일 모던화
+        # 범례(Legend) 스타일
         fig.update_layout(
             legend_title_text="업종 구분",
             legend=dict(
